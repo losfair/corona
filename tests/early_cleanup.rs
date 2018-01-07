@@ -3,7 +3,7 @@ extern crate futures;
 extern crate tokio_core;
 
 use std::cell::Cell;
-use std::panic::{self, AssertUnwindSafe};
+use std::panic::{self, AssertUnwindSafe, UnwindSafe};
 use std::rc::Rc;
 
 use corona::Coroutine;
@@ -31,6 +31,8 @@ impl Status {
         assert_eq!(1, Rc::strong_count(&self.0));
     }
 }
+
+impl UnwindSafe for Status {}
 
 fn fut_get() -> Box<Future<Item = (), Error = ()>> {
     Box::new(future::lazy(|| Ok::<_, ()>(())))
@@ -127,12 +129,11 @@ fn no_stream() -> Box<Stream<Item = (), Error = ()>> {
 #[test]
 fn stream_cleanup() {
     let core = Core::new().unwrap();
-    let no_stream = no_stream();
     let status = Status::default();
     let status_cp = status.clone();
     let finished = Coroutine::with_defaults(core.handle(), move || {
         status_cp.0.set(true);
-        for item in no_stream.iter_cleanup() {
+        for item in no_stream().iter_cleanup() {
             if item.is_err() {
                 status_cp.1.set(true);
                 return;
@@ -150,12 +151,11 @@ fn stream_cleanup() {
 #[test]
 fn stream_panic() {
     let core = Core::new().unwrap();
-    let no_stream = no_stream();
     let status = Status::default();
     let status_cp = status.clone();
     let finished = Coroutine::with_defaults(core.handle(), move || {
         status_cp.0.set(true);
-        for _ in no_stream.iter_result() {
+        for _ in no_stream().iter_result() {
             // It'll not get here
             status_cp.1.set(true);
         }

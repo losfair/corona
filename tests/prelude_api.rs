@@ -38,7 +38,7 @@ impl Cor {
     /// Starts a coroutine containing F and checks it returns 42
     fn cor_ft<F: FnOnce() -> u32 + 'static>(&mut self, f: F) {
         let coro = self.coroutine
-            .spawn(f)
+            .spawn_aus(f)
             .unwrap();
         self.ft(coro);
     }
@@ -94,7 +94,7 @@ fn reference() {
 fn push_sink() {
     let mut cor = Cor::new();
     let (mut sender, receiver) = mpsc::channel(1);
-    let producer = cor.coroutine.spawn(move || {
+    let producer = cor.coroutine.spawn_aus(move || {
             sender.coro_send(2).unwrap();
             sender.coro_send_many(vec![20, 20]).unwrap().unwrap();
         })

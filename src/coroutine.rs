@@ -3,7 +3,7 @@
 use std::any::Any;
 use std::cell::RefCell;
 use std::mem;
-use std::panic::{self, AssertUnwindSafe};
+use std::panic::{self, AssertUnwindSafe, UnwindSafe};
 
 use context::Context;
 use context::stack::{Stack, ProtectedFixedSizeStack};
@@ -45,7 +45,7 @@ struct CoroutineContext {
     handle: Handle,
     /// The context that called us and we'll switch back to it when we wait for something.
     parent_context: Context,
-    /// Our own stack. We keep ourselvel alive.
+    /// Our own stack. We keep ourselves alive.
     stack: ProtectedFixedSizeStack,
 }
 
@@ -61,7 +61,6 @@ thread_local! {
 pub struct Coroutine {
     handle: Handle,
     stack_size: usize,
-    leak_on_panic: bool,
 }
 
 impl Coroutine {
@@ -97,7 +96,6 @@ impl Coroutine {
         Coroutine {
             handle,
             stack_size: Stack::default_size(),
-            leak_on_panic: false,
         }
     }
 
@@ -158,7 +156,7 @@ impl Coroutine {
     pub fn with_defaults<R, Task>(handle: Handle, task: Task) -> CoroutineResult<R>
     where
         R: 'static,
-        Task: FnOnce() -> R + 'static,
+        Task: FnOnce() -> R + UnwindSafe + 'static,
     {
         Coroutine::new(handle).spawn(task).unwrap()
     }
@@ -178,6 +176,10 @@ impl Coroutine {
     ///
     /// This returns a `StackError` if the configured stack size is invalid.
     ///
+    /// Unlike ordinary futures, the coroutine will run even if the returned future is not polled.
+    /// The future is just a notification of the termination, not the driving force of the
+    /// coroutine.
+    ///
     /// # Examples
     ///
     /// ```rust
@@ -196,10 +198,28 @@ impl Coroutine {
     /// core.run(coroutine).unwrap();
     /// # }
     /// ```
+    ///
+    /// # Notes on unwind safety
+    ///
+    /// If a coroutine panics, it brings down only the coroutine, not the whole thread. Therefore,
+    /// if one coroutine panics while leaving a shared data structure in an inconsistent state,
+    /// another coroutine can witness the broken data structure and act wierd. More details on
+    /// unwind safety is in the [rust
+    /// documentation](https://doc.rust-lang.org/std/panic/trait.UnwindSafe.html).
+    ///
+    /// However, most data structures that usually cross the borders of the closure (like
+    /// `futures::unsync::channel`) don't declare being unwind safe even when they arguably are. As
+    /// it is just a hint, it is possible to wrap the closure in
+    /// [`AssertUnwindSafe`](https://doc.rust-lang.org/std/panic/struct.AssertUnwindSafe.html) and
+    /// turn off the safety check. As the broken data structure on its own can't cause undefined
+    /// behaviour, it doesn't even need `unsafe`.
+    ///
+    /// As a convenience short hand, the [`spawn_aus`](#method.spawn_aus) method does just that
+    /// with less fuss.
     pub fn spawn<R, Task>(&self, task: Task) -> Result<CoroutineResult<R>, StackError>
     where
         R: 'static,
-        Task: FnOnce() -> R + 'static,
+        Task: FnOnce() -> R + UnwindSafe + 'static,
     {
         let (sender, receiver) = oneshot::channel();
 
@@ -212,7 +232,7 @@ impl Coroutine {
                 stack,
             };
             CONTEXTS.with(|c| c.borrow_mut().push(my_context));
-            let result = match panic::catch_unwind(AssertUnwindSafe(task)) {
+            let result = match panic::catch_unwind(task) {
                 Ok(res) => TaskResult::Finished(res),
                 Err(panic) => TaskResult::Panicked(panic),
             };
@@ -225,6 +245,78 @@ impl Coroutine {
         Switch::run_new_coroutine(self.stack_size, Box::new(Some(perform)))?;
 
         Ok(CoroutineResult { receiver })
+    }
+
+    /// Spawns a task while asserting it is unwind safe.
+    ///
+    /// This is just a wrapper around [`spawn`](#method.spawn) that wraps the task in
+    /// [`AssertUnwindSafe`](https://doc.rust-lang.org/std/panic/struct.AssertUnwindSafe.html).
+    /// These two snippets are equivalent:
+    ///
+    /// ```rust
+    /// # extern crate corona;
+    /// # extern crate futures;
+    /// # extern crate tokio_core;
+    /// use std::panic::AssertUnwindSafe;
+    ///
+    /// use corona::Coroutine;
+    /// use futures::Sink;
+    /// use futures::unsync::mpsc;
+    /// use tokio_core::reactor::Core;
+    ///
+    /// # fn main() {
+    /// let mut core = Core::new().unwrap();
+    ///
+    /// let (sender, receiver) = mpsc::unbounded();
+    ///
+    /// let coroutine = Coroutine::with_defaults(core.handle(), AssertUnwindSafe(move || {
+    ///     Coroutine::wait(sender.send(42)).unwrap();
+    /// }));
+    ///
+    /// core.run(coroutine).unwrap();
+    /// # }
+    /// ```
+    ///
+    /// ```rust
+    /// # extern crate corona;
+    /// # extern crate futures;
+    /// # extern crate tokio_core;
+    ///
+    /// use corona::Coroutine;
+    /// use futures::Sink;
+    /// use futures::unsync::mpsc;
+    /// use tokio_core::reactor::Core;
+    ///
+    /// # fn main() {
+    /// let mut core = Core::new().unwrap();
+    ///
+    /// let (sender, receiver) = mpsc::unbounded();
+    ///
+    /// let coroutine = Coroutine::new(core.handle()).spawn_aus(move || {
+    ///         Coroutine::wait(sender.send(42)).unwrap();
+    ///     })
+    ///     .unwrap();
+    ///
+    /// core.run(coroutine).unwrap();
+    /// # }
+    /// ```
+    ///
+    /// You should make sure that panicking in a coroutine won't leave observable broken data
+    /// structures around before using this. It generally means one of:
+    ///
+    /// * The application is compiled with `panic = "abort"`.
+    /// * The panic will propagate and tear down the whole thread or application, so there's
+    ///   nothing left around.
+    /// * The shared data structures are well behaved around panics (eg. they either don't panic
+    ///   from inside, like channels, or they stay in some defined state).
+    /// * You don't really care what happens after a panic, because your applications never ever
+    ///   panic.
+    pub fn spawn_aus<R, Task>(&self, task: Task) -> Result<CoroutineResult<R>, StackError>
+    where
+        R: 'static,
+        Task: FnOnce() -> R + 'static
+    {
+        self.spawn(AssertUnwindSafe(task))
     }
 
     /// Waits for completion of a future.
@@ -325,6 +417,25 @@ impl Coroutine {
         }
         Ok(result.unwrap())
     }
+
+    /// Provides the handle to the reactor this coroutine runs on.
+    ///
+    /// Sometimes it is inconvenient to pass the handle to the current tokio reactor core around
+    /// (maybe it is needed too deep inside function calls). The current coroutine needs access to
+    /// it anyway, so it can as well share it.
+    ///
+    /// # Panics
+    ///
+    /// This panics if called outside of a coroutine.
+    pub fn reactor() -> Handle {
+        CONTEXTS.with(|c| {
+            c.borrow()
+                .last()
+                .expect("Can't get reactor handle outside of a coroutine")
+                .handle
+                .clone()
+        })
+    }
 }
 
 #[cfg(test)]
@@ -352,7 +463,7 @@ mod tests {
         builder.stack_size(40960);
         let builder_inner = builder.clone();
 
-        let result = builder.spawn(move || {
+        let result = builder.spawn_aus(move || {
                 let result = builder_inner.spawn(move || {
                         s2c.store(true, Ordering::Relaxed);
                         42
@@ -377,15 +488,18 @@ mod tests {
         let mut core = Core::new().unwrap();
         let handle = core.handle();
         let (sender, receiver) = oneshot::channel();
-        let all_done = Coroutine::with_defaults(core.handle(), move || {
-            let msg = Coroutine::wait(receiver).unwrap().unwrap();
-            msg
-        });
-        Coroutine::with_defaults(core.handle(), move || {
-            let timeout = Timeout::new(Duration::from_millis(50), &handle).unwrap();
-            Coroutine::wait(timeout).unwrap().unwrap();
-            sender.send(42).unwrap();
-        });
+        let builder = Coroutine::new(core.handle());
+        let all_done = builder.spawn_aus(move || {
+                let msg = Coroutine::wait(receiver).unwrap().unwrap();
+                msg
+            })
+            .unwrap();
+        builder.spawn_aus(move || {
+                let timeout = Timeout::new(Duration::from_millis(50), &handle).unwrap();
+                Coroutine::wait(timeout).unwrap().unwrap();
+                sender.send(42).unwrap();
+            })
+            .unwrap();
         assert_eq!(42, core.run(all_done).unwrap());
     }
 

@@ -55,9 +55,8 @@ pub trait CoroutineFuture: Sized {
     /// # use tokio_core::reactor::{Core, Timeout};
     /// # fn main() {
     /// let mut core = Core::new().unwrap();
-    /// let handle = core.handle();
-    /// let coro = Coroutine::with_defaults(core.handle(), move || {
-    ///     let timeout = Timeout::new(Duration::from_millis(50), &handle).unwrap();
+    /// let coro = Coroutine::with_defaults(core.handle(), || {
+    ///     let timeout = Timeout::new(Duration::from_millis(50), &Coroutine::reactor()).unwrap();
     ///     // This would switch to another coroutine if there was one ready.
     ///     // We unwrap, since the error doesn't happen on timeouts.
     ///     timeout.coro_wait().unwrap();
@@ -135,13 +134,14 @@ pub trait CoroutineStream: Sized {
     /// // Make sure the channel is terminated, or it would wait forever.
     /// drop(sender);
     ///
-    /// let coro = Coroutine::with_defaults(core.handle(), move || {
-    ///     let mut sum = 0;
-    ///     for num in receiver.iter_ok() {
-    ///         sum += num;
-    ///     }
-    ///     sum
-    /// });
+    /// let coro = Coroutine::new(core.handle()).spawn_aus(move || {
+    ///         let mut sum = 0;
+    ///         for num in receiver.iter_ok() {
+    ///             sum += num;
+    ///         }
+    ///         sum
+    ///     })
+    ///     .unwrap();
     /// assert_eq!(42, core.run(coro).unwrap());
     /// # }
     /// ```
@@ -188,13 +188,14 @@ pub trait CoroutineStream: Sized {
     /// // Make sure the channel is terminated, or it would wait forever.
     /// drop(sender);
     ///
-    /// let coro = Coroutine::with_defaults(core.handle(), move || {
-    ///     let mut sum = 0;
-    ///     for num in receiver.iter_result() {
-    ///         sum += num.expect("MPSC should not error");
-    ///     }
-    ///     sum
-    /// });
+    /// let coro = Coroutine::new(core.handle()).spawn_aus(move || {
+    ///         let mut sum = 0;
+    ///         for num in receiver.iter_result() {
+    ///             sum += num.expect("MPSC should not error");
+    ///         }
+    ///         sum
+    ///     })
+    ///     .unwrap();
     /// assert_eq!(42, core.run(coro).unwrap());
     /// # }
     /// ```
@@ -239,12 +240,13 @@ pub trait CoroutineStream: Sized {
     /// sender.unbounded_send(21);
     /// drop(sender);
     ///
-    /// let coro = Coroutine::with_defaults(core.handle(), move || {
-    ///     receiver.extractor()
-    ///         .coro_wait() // Block until the item actually falls out
-    ///         .unwrap() // Unwrap the outer result
-    ///         .unwrap() // Unwrap the option, since it gives `Option<T>`
-    /// });
+    /// let coro = Coroutine::new(core.handle()).spawn_aus(move || {
+    ///         receiver.extractor()
+    ///             .coro_wait() // Block until the item actually falls out
+    ///             .unwrap() // Unwrap the outer result
+    ///             .unwrap() // Unwrap the option, since it gives `Option<T>`
+    ///     })
+    ///     .unwrap();
     /// assert_eq!(21, core.run(coro).unwrap());
     /// # }
     fn extractor(&mut self) -> StreamExtractor<Self>;
@@ -278,13 +280,14 @@ pub trait CoroutineStream: Sized {
     /// sender.unbounded_send(21);
     /// drop(sender);
     ///
-    /// let coro = Coroutine::with_defaults(core.handle(), move || {
-    ///     let mut sum = 0;
-    ///     while let Some(num) = receiver.coro_next().unwrap() {
-    ///         sum += num;
-    ///     }
-    ///     sum
-    /// });
+    /// let coro = Coroutine::new(core.handle()).spawn_aus(move || {
+    ///         let mut sum = 0;
+    ///         while let Some(num) = receiver.coro_next().unwrap() {
+    ///             sum += num;
+    ///         }
+    ///         sum
+    ///     })
+    ///     .unwrap();
     /// assert_eq!(42, core.run(coro).unwrap());
     /// # }
     /// ```
@@ -357,9 +360,10 @@ pub trait CoroutineSink: Sized {
     /// # fn main() {
     /// let mut core = Core::new().unwrap();
     /// let (mut sender, receiver) = mpsc::channel(1);
-    /// let coro = Coroutine::with_defaults(core.handle(), move || {
-    ///     sender.coro_send(42).unwrap();
-    /// });
+    /// let coro = Coroutine::new(core.handle()).spawn_aus(move || {
+    ///         sender.coro_send(42).unwrap();
+    ///     })
+    ///     .unwrap();
     /// assert_eq!(42, core.run(receiver.into_future()).unwrap().0.unwrap());
     /// # }
     /// ```

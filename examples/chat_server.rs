@@ -34,7 +34,7 @@ use corona::wrappers::SinkSender;
 use futures::{future, Future};
 use futures::unsync::mpsc::{self, Sender, Receiver};
 use tokio_core::net::{TcpListener, TcpStream};
-use tokio_core::reactor::{Core, Handle};
+use tokio_core::reactor::Core;
 use tokio_io::AsyncRead;
 use tokio_io::io::{self as aio, WriteHalf};
 use tokio_io::codec::{Encoder, FramedWrite};
@@ -59,27 +59,27 @@ impl Encoder for LineEncoder {
 type Client = FramedWrite<WriteHalf<TcpStream>, LineEncoder>;
 type Clients = Rc<RefCell<Vec<Client>>>;
 
-fn handle_connection(handle: &Handle,
-                     connection: TcpStream,
-                     clients: &Clients,
-                     mut msgs: Sender<String>)
+fn handle_connection(connection: TcpStream, clients: &Clients, mut msgs: Sender<String>)
 {
     let (input, output) = connection.split();
     let writer = FramedWrite::new(output, LineEncoder);
     clients.borrow_mut().push(writer);
     let input = BufReader::new(input);
-    Coroutine::new(handle.clone()).stack_size(32_768).spawn(move || {
-        // If there's an error, kill the current coroutine. That one is not waited on and the
-        // panic won't propagate. Logging it might be cleaner, but this demonstrates how the
-        // coroutines act.
-        for line in aio::lines(input).iter_ok() {
-            // Pass each line to the broadcaster so it sends it to everyone.
-            // Send it back (the coroutine will yield until the data is written). May block on
-            // being full for a while, then we don't accept more messages.
-            msgs.coro_send(line).expect("The broadcaster suddenly disappeared");
-        }
-        eprintln!("A connection terminated");
-    }).expect("Wrong stack size");
+    Coroutine::new(Coroutine::reactor())
+        .stack_size(32_768)
+        .spawn_aus(move || {
+            // If there's an error, kill the current coroutine. That one is not waited on and the
+            // panic won't propagate. Logging it might be cleaner, but this demonstrates how the
+            // coroutines act.
+            for line in aio::lines(input).iter_ok() {
+                // Pass each line to the broadcaster so it sends it to everyone.
+                // Send it back (the coroutine will yield until the data is written). May block on
+                // being full for a while, then we don't accept more messages.
+                msgs.coro_send(line).expect("The broadcaster suddenly disappeared");
+            }
+            eprintln!("A connection terminated");
+        })
+        .expect("Wrong stack size");
 }
 
 fn broadcaster(msgs: Receiver<String>, clients: &Clients) {
@@ -118,8 +118,8 @@ fn broadcaster(msgs: Receiver<String>, clients: &Clients) {
     }
 }
 
-fn acceptor(handle: &Handle, clients: &Clients, sender: &Sender<String>) {
-    let listener = TcpListener::bind(&"[::]:1234".parse().unwrap(), handle).unwrap();
+fn acceptor(clients: &Clients, sender: &Sender<String>) {
+    let listener = TcpListener::bind(&"[::]:1234".parse().unwrap(), &Coroutine::reactor()).unwrap();
     let incoming = listener.incoming();
     // This will accept the connections, but will allow other coroutines to run when there are
     // none ready.
@@ -127,7 +127,7 @@ fn acceptor(handle: &Handle, clients: &Clients, sender: &Sender<String>) {
         match attempt {
             Ok((connection, address)) => {
                 eprintln!("Received a connection from {}", address);
-                handle_connection(handle, connection, clients, sender.clone());
+                handle_connection(connection, clients, sender.clone());
             },
             // FIXME: Are all the errors recoverable?
             Err(e) => eprintln!("An error accepting a connection: {}", e),
@@ -138,17 +138,19 @@ fn acceptor(handle: &Handle, clients: &Clients, sender: &Sender<String>) {
 fn main() {
     // Set up of the listening socket
     let mut core = Core::new().unwrap();
-    let handle = core.handle();
 
     let (sender, receiver) = mpsc::channel(100);
     let clients = Clients::default();
     let clients_rc = Rc::clone(&clients);
-    let broadcaster = Coroutine::with_defaults(core.handle(), move || {
-        broadcaster(receiver, &clients_rc)
-    });
-    let acceptor = Coroutine::with_defaults(core.handle(), move || {
-        acceptor(&handle, &clients, &sender)
-    });
+    let builder = Coroutine::new(core.handle());
+    let broadcaster = builder.spawn_aus(move || {
+            broadcaster(receiver, &clients_rc)
+        })
+        .unwrap();
+    let acceptor = builder.spawn_aus(move || {
+            acceptor(&clients, &sender)
+        })
+        .unwrap();
     // Let the acceptor and everything else run.
     // Propagate all panics from the coroutine to the main thread with the unwrap
     core.run(broadcaster.join(acceptor)).unwrap();

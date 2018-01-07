@@ -1,3 +1,6 @@
+* The `spawn` method now expects UnwindSafe tasks, as a warning. But because it's
+  such an annoying thing in practice, the `spawn_aus` method turns it off.
+
 # 0.3.1
 
 * Made the `Coroutine::new()` builder more ergonomic to use.

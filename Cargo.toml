@@ -1,6 +1,7 @@
 [package]
 name = "corona"
 # Also increase the version in src/lib html root attribute
+# TODO: Bump to 0.4, since there's a back-incompatible change in the API
 version = "0.3.1"
 authors = ["Michal 'vorner' Vaner <vorner@vorner.cz>"]
 description = "Coroutine and Async/Await support for tokio-based futures"

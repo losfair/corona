@@ -8,8 +8,6 @@
 
 # Panicking/unwinding
 
-* The default spawn should expect unwind safe things. Provide spawn_unwind_safe
-  or something.
 * Catch unwinds from within the waited-on coroutines, and propagate them back
   to the coroutine, instead of killing the core (there's a future modifier for
   that)

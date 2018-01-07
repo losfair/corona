@@ -242,22 +242,25 @@ mod tests {
     fn async_sink_sender() {
         let (mut sender, receiver) = mpsc::channel(1);
         let mut core = Core::new().unwrap();
-        let sending_fut = Coroutine::with_defaults(core.handle(), move || {
-            let data = vec![1, 2, 3];
-            Coroutine::wait(SinkSender::new(&mut sender, data))
-                .unwrap()
-                .unwrap();
-        });
-        let receiving_fut = Coroutine::with_defaults(core.handle(), move || {
-            let mut result = Vec::new();
-            Coroutine::wait(receiver.for_each(|val| {
-                    result.push(val);
-                    Ok(())
-                }))
-                .unwrap()
-                .unwrap();
-            assert_eq!(vec![1, 2, 3], result);
-        });
+        let builder = Coroutine::new(core.handle());
+        let sending_fut = builder.spawn_aus(move || {
+                let data = vec![1, 2, 3];
+                Coroutine::wait(SinkSender::new(&mut sender, data))
+                    .unwrap()
+                    .unwrap();
+            })
+            .unwrap();
+        let receiving_fut = builder.spawn_aus(move || {
+                let mut result = Vec::new();
+                Coroutine::wait(receiver.for_each(|val| {
+                        result.push(val);
+                        Ok(())
+                    }))
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(vec![1, 2, 3], result);
+            })
+            .unwrap();
         core.run(receiving_fut).unwrap();
         core.run(sending_fut).unwrap();
     }

@@ -53,9 +53,8 @@
 //!
 //! fn main() {
 //!     let mut core = Core::new().unwrap();
-//!     let handle = core.handle();
-//!     let coro = Coroutine::with_defaults(core.handle(), move || {
-//!         let timeout = Timeout::new(Duration::from_millis(50), &handle).unwrap();
+//!     let coro = Coroutine::with_defaults(core.handle(), || {
+//!         let timeout = Timeout::new(Duration::from_millis(50), &Coroutine::reactor()).unwrap();
 //!         // This will suspend the current coroutine. If there is some other one that is
 //!         // ready to continue, it switches into that. If not, the current thread is
 //!         // blocked until something can make progress.
@@ -146,15 +145,17 @@
 //! # fn main() {
 //! let mut core = Core::new().unwrap();
 //! let (sender, receiver) = oneshot::channel();
-//! let handle = core.handle();
-//! let c = Coroutine::with_defaults(handle.clone(), move || {
-//!     core.run(receiver).unwrap();
-//! });
-//! Coroutine::with_defaults(handle.clone(), move || {
-//!     let timeout = Timeout::new(Duration::from_millis(50), &handle).unwrap();
-//!     timeout.coro_wait().unwrap();
-//!     drop(sender.send(42));
-//! });
+//! let builder = Coroutine::new(core.handle());
+//! let c = builder.spawn_aus(move || {
+//!         core.run(receiver).unwrap();
+//!     })
+//!     .unwrap();
+//! builder.spawn_aus(move || {
+//!         let timeout = Timeout::new(Duration::from_millis(50), &Coroutine::reactor()).unwrap();
+//!         timeout.coro_wait().unwrap();
+//!         drop(sender.send(42));
+//!     })
+//!     .unwrap();
 //! c.wait().unwrap();
 //! # }
 //! ```
@@ -185,13 +186,13 @@
 //! let handle = core.handle();
 //! let builder = Coroutine::new(core.handle());
 //! let (sender, receiver) = mpsc::channel(1);
-//! builder.spawn(|| {
+//! builder.spawn_aus(|| {
 //!         let mut sender = sender;
 //!         sender = sender.send(1).coro_wait().unwrap();
 //!         sender = sender.send(2).coro_wait().unwrap();
 //!     })
 //!     .unwrap();
-//! let coroutine = builder.spawn(move || {
+//! let coroutine = builder.spawn_aus(move || {
 //!         for item in receiver.iter_ok() {
 //!             println!("{}", item);
 //!         }
