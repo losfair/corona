@@ -26,6 +26,9 @@ extern crate test;
 extern crate tokio_core;
 extern crate tokio_io;
 
+#[cfg(feature = "include_coroutines")]
+extern crate coroutines;
+
 use std::env;
 use std::io::{Read, Write};
 use std::net::{TcpStream, TcpListener, SocketAddr};
@@ -256,6 +259,47 @@ fn threads_many(b: &mut Bencher) {
 fn threads_cpus(b: &mut Bencher) {
     bench(b, num_cpus::get(), run_threads);
 }
+
+#[cfg(feature = "include_coroutines")]
+fn run_coroutines(listener: TcpListener) {
+    // All operations that might block should be done in
+    // a coroutine context to enable runtime hooks.
+    coroutines::spawn(move || {
+        // Normally this is done internally by the coroutine library.
+        // However, the listener isn't created in a coroutine so
+        // we need to manually enable the nonblocking flag.
+        listener.set_nonblocking(true).unwrap();
+
+        while let Ok((mut connection, _address)) = listener.accept() {
+            coroutines::spawn(move || {
+                let mut buf = [0u8; BUF_SIZE];
+                for _ in 0..*EXCHANGES {
+                    connection.read_exact(&mut buf[..]).unwrap();
+                    connection.write_all(&buf[..]).unwrap();
+                }
+            });
+        }
+    });
+}
+
+#[cfg(feature = "include_coroutines")]
+#[bench]
+fn coroutines(b: &mut Bencher) {
+    bench(b, 1, run_coroutines);
+}
+
+#[cfg(feature = "include_coroutines")]
+#[bench]
+fn coroutines_many(b: &mut Bencher) {
+    bench(b, *SERVER_THREADS, run_coroutines);
+}
+
+#[cfg(feature = "include_coroutines")]
+#[bench]
+fn coroutines_cpus(b: &mut Bencher) {
+    bench(b, *SERVER_THREADS, run_coroutines);
+}
+
 
 fn run_futures(listener: TcpListener) {
     let mut core = Core::new().unwrap();
